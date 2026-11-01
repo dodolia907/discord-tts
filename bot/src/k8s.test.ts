@@ -141,6 +141,13 @@ describe("KubernetesPods", () => {
     expect(fake.deleteNamespacedPod).toHaveBeenCalledTimes(1);
   });
 
+  it("reads the container's restart count", async () => {
+    const read = vi.fn(async () => ({ status: { containerStatuses: [{ restartCount: 2 }] } }));
+    const { pods } = setup({ readNamespacedPod: read });
+
+    await expect(pods.restartCount("p")).resolves.toBe(2);
+  });
+
   it("treats deleting a missing Pod as success", async () => {
     const del = vi.fn().mockRejectedValue(new ApiException(404, "not found", "", {}));
     const { pods } = setup({ deleteNamespacedPod: del });

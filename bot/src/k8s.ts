@@ -144,6 +144,11 @@ export class KubernetesPods implements PodController {
     }
   }
 
+  async restartCount(name: string): Promise<number> {
+    const pod = await this.api.readNamespacedPod({ name, namespace: this.namespace });
+    return pod.status?.containerStatuses?.[0]?.restartCount ?? 0;
+  }
+
   /** Removes the Pods left over from a previous run. */
   async deleteAll(): Promise<void> {
     const pods = await this.api.listNamespacedPod({

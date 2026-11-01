@@ -40,6 +40,7 @@ function setup(overrides: Partial<SessionDeps> = {}) {
       return { name: `pod-${podCount}`, baseUrl: "http://pod" };
     }),
     delete: vi.fn(async (_name: string) => {}),
+    restartCount: vi.fn(async (_name: string) => 0),
   };
   let lost = () => {};
   const deps: SessionDeps = {
@@ -235,6 +236,85 @@ describe("SessionManager", () => {
 
     expect(ctx.deps.log).toHaveBeenCalledWith(expect.stringContaining("pod-1"), expect.any(Error));
     await expect(ctx.manager.join(join)).resolves.toBeNull();
+  });
+});
+
+describe("restart notices", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("announces a container restart once", async () => {
+    const restartCount = vi.fn(async () => 1);
+    const base = setup();
+    const { manager, deps } = setup({
+      pods: { ...base.pods, restartCount },
+      podWatchIntervalMs: 1,
+    });
+    await manager.join(join);
+
+    await sleep(20);
+
+    expect(restartCount.mock.calls.length).toBeGreaterThan(1);
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+    expect(deps.notify).toHaveBeenCalledWith(CHANNEL, expect.stringContaining("再起動しました"));
+    await manager.closeAll();
+  });
+
+  it("stays quiet without a restart and stops watching on close", async () => {
+    const restartCount = vi.fn(async () => 0);
+    const base = setup();
+    const { manager, deps } = setup({
+      pods: { ...base.pods, restartCount },
+      podWatchIntervalMs: 1,
+    });
+    await manager.join(join);
+    await sleep(5);
+
+    await manager.leave(GUILD);
+    const calls = restartCount.mock.calls.length;
+    await sleep(10);
+
+    expect(deps.notify).not.toHaveBeenCalled();
+    expect(restartCount.mock.calls.length).toBe(calls);
+  });
+
+  it("logs a failed check and keeps the session", async () => {
+    const base = setup();
+    const { manager, deps } = setup({
+      pods: { ...base.pods, restartCount: vi.fn().mockRejectedValue(new Error("api down")) },
+      podWatchIntervalMs: 1,
+    });
+    await manager.join(join);
+
+    await sleep(5);
+
+    expect(deps.log).toHaveBeenCalled();
+    expect(deps.notify).not.toHaveBeenCalled();
+    await manager.closeAll();
+  });
+
+  it("announces recreating the Pod", async () => {
+    const { manager, tts, deps } = setup();
+    await manager.join(join);
+    for (let i = 0; i < FAILURES_BEFORE_RECOVERY; i += 1) {
+      tts.synthesize.mockRejectedValueOnce(new Error("boom"));
+      manager.handleMessage(GUILD, CHANNEL, "", `失敗${i}`);
+    }
+    await flush();
+    await flush();
+
+    expect(vi.mocked(deps.notify).mock.calls.map(([, message]) => message)).toEqual([
+      expect.stringContaining("再起動しています"),
+      expect.stringContaining("再開"),
+    ]);
+  });
+
+  it("tells every session when the bot shuts down", async () => {
+    const { manager, deps } = setup();
+    await manager.join(join);
+
+    await manager.closeAll("再起動します");
+
+    expect(deps.notify).toHaveBeenCalledWith(CHANNEL, "再起動します");
   });
 });
 

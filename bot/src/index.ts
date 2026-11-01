@@ -45,23 +45,30 @@ const manager = new SessionManager({
     const guild = await client.guilds.fetch(guildId);
     return connectVoice(guild, channelId, onLost, signal);
   },
-  notify(channelId, message) {
-    const channel = client.channels.cache.get(channelId);
-    if (channel?.isSendable()) {
-      channel.send(message).catch((error: unknown) => log("failed to send a notice", error));
-    }
-  },
+  notify: notifyChannel,
 });
+
+async function notifyChannel(channelId: string, message: string): Promise<void> {
+  const channel = client.channels.cache.get(channelId);
+  if (channel?.isSendable()) {
+    await channel.send(message).then(
+      () => {},
+      (error: unknown) => log("failed to send a notice", error),
+    );
+  }
+}
 
 /** Clears what a previous run left behind: its Pods, and voice connections Discord still holds. */
 async function cleanUpPreviousRun(c: Client<true>): Promise<void> {
   await pods.deleteAll();
   for (const guild of c.guilds.cache.values()) {
-    if (guild.voiceStates.cache.get(c.user.id)?.channelId) {
+    const channelId = guild.voiceStates.cache.get(c.user.id)?.channelId;
+    if (channelId) {
       guild.shard.send({
         op: 4,
         d: { guild_id: guild.id, channel_id: null, self_mute: false, self_deaf: false },
       });
+      await notifyChannel(channelId, "botが再起動したため読み上げを終了しました。`/join` で再開できます。");
     }
   }
 }
@@ -123,7 +130,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   log(`received ${signal}, closing sessions`);
   const timer = setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS);
-  await manager.closeAll();
+  await manager.closeAll("botが再起動するため読み上げを終了します。起動後に `/join` で再開できます。");
   await client.destroy();
   clearTimeout(timer);
   process.exit(0);

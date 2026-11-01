@@ -4,6 +4,7 @@ import { matchVoices, type TtsClient, type Voice } from "./tts/client.js";
 
 export const MAX_QUEUE = 20;
 export const FAILURES_BEFORE_RECOVERY = 3;
+const POD_WATCH_INTERVAL_MS = 15_000;
 
 export interface RunningPod {
   name: string;
@@ -14,6 +15,8 @@ export interface PodController {
   /** Resolves once the Pod is Ready. Leaves no Pod behind when it rejects. */
   start(guildId: string, engine: Engine, signal: AbortSignal): Promise<RunningPod>;
   delete(name: string): Promise<void>;
+  /** How many times the Pod's container has restarted. */
+  restartCount(name: string): Promise<number>;
 }
 
 export interface VoiceLink {
@@ -26,9 +29,11 @@ export interface SessionDeps {
   engines: Record<EngineName, Engine>;
   /** Leaves no connection behind when it rejects. `onLost` fires if the link later dies. */
   connectVoice(guildId: string, channelId: string, onLost: () => void, signal: AbortSignal): Promise<VoiceLink>;
-  notify(channelId: string, message: string): void;
+  /** Must not reject. */
+  notify(channelId: string, message: string): void | Promise<void>;
   log(message: string, error?: unknown): void;
   maxSessions: number;
+  podWatchIntervalMs?: number;
 }
 
 /** A failure whose message is meant for the Discord user. */
@@ -44,6 +49,8 @@ class Session {
   private tts: TtsClient | null = null;
   private voice: VoiceLink | null = null;
   private selectedVoice: number | null = null;
+  private podWatch: NodeJS.Timeout | undefined;
+  private podRestarts = 0;
   private processing = false;
   private closing: Promise<void> | null = null;
 
@@ -76,6 +83,7 @@ class Session {
         signal.throwIfAborted();
       }
       this.voice = voice;
+      this.watchPod();
       return credit;
     } catch (error) {
       await this.close();
@@ -129,13 +137,34 @@ class Session {
     return this.closing;
   }
 
+  /** Notices a container restart, such as running out of memory, which the session would otherwise never see. */
+  private watchPod(): void {
+    this.podWatch = setInterval(() => {
+      const pod = this.pod;
+      if (!pod) {
+        return;
+      }
+      this.deps.pods.restartCount(pod.name).then(
+        (count) => {
+          if (this.pod === pod && count > this.podRestarts) {
+            this.podRestarts = count;
+            void this.deps.notify(this.channelId, "音声合成Podが再起動しました。読み上げが一時的に抜ける場合があります。");
+          }
+        },
+        (error: unknown) => this.deps.log(`failed to read Pod ${pod.name}`, error),
+      );
+    }, this.deps.podWatchIntervalMs ?? POD_WATCH_INTERVAL_MS);
+    this.podWatch.unref();
+  }
+
   private async shutdown(notice?: string): Promise<void> {
     this.abort.abort();
+    clearInterval(this.podWatch);
     this.queue.length = 0;
     this.voice?.destroy();
     this.voice = null;
     if (notice) {
-      this.deps.notify(this.channelId, notice);
+      await this.deps.notify(this.channelId, notice);
     }
     try {
       await this.deletePod();
@@ -217,13 +246,16 @@ class Session {
 
   private async recoverPod(): Promise<boolean> {
     try {
+      void this.deps.notify(this.channelId, "音声合成に失敗が続いたため、音声合成Podを再起動しています。");
       await this.deletePod();
+      this.podRestarts = 0;
       const engine = this.deps.engines[this.request.engine];
       await this.startPod(engine);
       await this.tts!.prepare(this.abort.signal);
       if (this.selectedVoice !== null) {
         await this.tts!.selectVoice(this.selectedVoice, this.abort.signal);
       }
+      void this.deps.notify(this.channelId, "音声合成Podを再起動しました。読み上げを再開します。");
       return true;
     } catch (error) {
       if (!this.abort.signal.aborted) {
@@ -296,7 +328,7 @@ export class SessionManager {
     }
   }
 
-  async closeAll(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map((session) => session.close()));
+  async closeAll(notice?: string): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((session) => session.close(notice)));
   }
 }
