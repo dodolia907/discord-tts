@@ -27,6 +27,31 @@ export const commandDefinitions = (engines: Record<EngineName, Engine>) => [
     .toJSON(),
 ];
 
+interface CommandStore {
+  set(commands: never[]): Promise<unknown>;
+}
+
+/**
+ * Makes the given definitions the application's only commands. Replacing the global commands
+ * does not touch guild commands, which an earlier bot on this application may have registered.
+ */
+export async function syncCommands(
+  application: { commands: { set(commands: ReturnType<typeof commandDefinitions>): Promise<unknown> } },
+  guilds: Iterable<{ id: string; commands: CommandStore }>,
+  definitions: ReturnType<typeof commandDefinitions>,
+  log: (message: string, error?: unknown) => void,
+): Promise<void> {
+  await application.commands.set(definitions);
+  for (const guild of guilds) {
+    try {
+      await guild.commands.set([]);
+    } catch (error) {
+      // A guild that blocks this should not stop the bot from serving the others.
+      log(`failed to clear the commands of guild ${guild.id}`, error);
+    }
+  }
+}
+
 export async function handleCommand(
   interaction: ChatInputCommandInteraction,
   deps: {

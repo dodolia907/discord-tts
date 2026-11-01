@@ -1,6 +1,6 @@
 import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
 import { ChannelType, Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
-import { commandDefinitions, handleCommand } from "./commands.js";
+import { commandDefinitions, handleCommand, syncCommands } from "./commands.js";
 import { loadConfig } from "./config.js";
 import { createEngines } from "./engines.js";
 import { KubernetesPods } from "./k8s.js";
@@ -70,7 +70,7 @@ function countHumans(channel: VoiceBasedChannel): number {
 client.once(Events.ClientReady, async (c) => {
   try {
     await cleanUpPreviousRun(c);
-    await c.application.commands.set(commandDefinitions(engines));
+    await syncCommands(c.application, c.guilds.cache.values(), commandDefinitions(engines), log);
     log(`ready as ${c.user.tag}`);
   } catch (error) {
     log("startup failed", error);
