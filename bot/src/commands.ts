@@ -1,4 +1,5 @@
 import {
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   InteractionContextType,
   MessageFlags,
@@ -7,6 +8,7 @@ import {
 } from "discord.js";
 import { ENGINE_NAMES, type Engine, type EngineName, isEngineName } from "./engines.js";
 import { type SessionManager, UserFacingError } from "./session.js";
+import { matchVoices } from "./tts/client.js";
 
 export const commandDefinitions = (engines: Record<EngineName, Engine>) => [
   new SlashCommandBuilder()
@@ -25,7 +27,30 @@ export const commandDefinitions = (engines: Record<EngineName, Engine>) => [
     .setDescription("読み上げを終了してVCから退出します")
     .setContexts(InteractionContextType.Guild)
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("voice")
+    .setDescription("読み上げの声を変更します(VOICEVOXのみ)")
+    .setContexts(InteractionContextType.Guild)
+    .addStringOption((option) =>
+      option.setName("speaker").setDescription("声の名前").setRequired(true).setAutocomplete(true),
+    )
+    .toJSON(),
 ];
+
+/** Discord accepts at most this many autocomplete choices. */
+const MAX_CHOICES = 25;
+
+export async function handleAutocomplete(
+  interaction: AutocompleteInteraction,
+  manager: SessionManager,
+): Promise<void> {
+  const voices = interaction.guildId ? await manager.voices(interaction.guildId) : [];
+  const query = interaction.options.getFocused();
+  const matches = query.trim() ? matchVoices(voices, query) : voices;
+  await interaction.respond(
+    matches.slice(0, MAX_CHOICES).map((voice) => ({ name: voice.label, value: String(voice.id) })),
+  );
+}
 
 interface CommandStore {
   set(commands: never[]): Promise<unknown>;
@@ -70,6 +95,24 @@ export async function handleCommand(
     await interaction.deferReply();
     const left = await deps.manager.leave(interaction.guildId);
     await interaction.editReply(left ? "読み上げを終了しました。" : "読み上げ中ではありません。");
+    return;
+  }
+  if (interaction.commandName === "voice") {
+    await interaction.deferReply();
+    try {
+      const { label, credit } = await deps.manager.changeVoice(
+        interaction.guildId,
+        interaction.options.getString("speaker", true),
+      );
+      await interaction.editReply(`声を ${label} に変更しました。${credit ? `\n音声: ${credit}` : ""}`);
+    } catch (error) {
+      if (error instanceof UserFacingError) {
+        await interaction.editReply(error.message);
+      } else {
+        deps.log("/voice failed", error);
+        await interaction.editReply("声を変更できませんでした。時間をおいてお試しください。");
+      }
+    }
     return;
   }
   if (interaction.commandName !== "join") {

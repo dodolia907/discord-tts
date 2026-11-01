@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SPOKEN_CHARS, toSpeech } from "./text.js";
+import { MAX_SPOKEN_CHARS, toSpeech, toUtterance } from "./text.js";
+
+describe("toUtterance", () => {
+  it.each([
+    ["ぽんた", "こんにちは", "ぽんた、こんにちは"],
+    ["<:logo:1>", "こんにちは", "こんにちは"],
+    ["", "こんにちは", "こんにちは"],
+    ["ぽんた", "<:only:1>", ""],
+    ["ぽんた", "", ""],
+  ])("%j + %j -> %j", (author, content, expected) => {
+    expect(toUtterance(author, content)).toBe(expected);
+  });
+
+  it("does not count the name towards the message limit", () => {
+    const body = "あ".repeat(MAX_SPOKEN_CHARS);
+    expect(toUtterance("ぽんた", body)).toBe(`ぽんた、${body}`);
+  });
+});
 
 describe("toSpeech", () => {
   it.each([

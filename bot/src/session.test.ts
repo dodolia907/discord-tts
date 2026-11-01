@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Engine, EngineName } from "./engines.js";
 import { FAILURES_BEFORE_RECOVERY, MAX_QUEUE, type SessionDeps, SessionManager, UserFacingError } from "./session.js";
-import type { TtsClient } from "./tts/client.js";
+import type { TtsClient, Voice } from "./tts/client.js";
 
 const GUILD = "g1";
 const CHANNEL = "c1";
@@ -22,6 +22,11 @@ function setup(overrides: Partial<SessionDeps> = {}) {
     prepare: vi.fn(async () => {}),
     credit: vi.fn(async () => null as string | null),
     synthesize: vi.fn(async (text: string): Promise<Buffer> => Buffer.from(text)),
+    voices: vi.fn(async (): Promise<Voice[]> => [
+      { id: 3, label: "ずんだもん(ノーマル)" },
+      { id: 2, label: "四国めたん(ノーマル)" },
+    ]),
+    selectVoice: vi.fn(async (_id: number, _signal: AbortSignal) => {}),
   } satisfies TtsClient;
   const engine = { name: "openjtalk", createClient: () => tts } as unknown as Engine;
   const voice = {
@@ -233,16 +238,89 @@ describe("SessionManager", () => {
   });
 });
 
+describe("changing the voice", () => {
+  it("selects the matching voice and returns its credit", async () => {
+    const { manager, tts } = setup();
+    await manager.join(join);
+    tts.credit.mockResolvedValue("VOICEVOX:四国めたん");
+
+    await expect(manager.changeVoice(GUILD, "2")).resolves.toEqual({
+      label: "四国めたん(ノーマル)",
+      credit: "VOICEVOX:四国めたん",
+    });
+    expect(tts.selectVoice).toHaveBeenCalledWith(2, expect.anything());
+  });
+
+  it("rejects a voice that does not exist", async () => {
+    const { manager, tts } = setup();
+    await manager.join(join);
+
+    await expect(manager.changeVoice(GUILD, "いない")).rejects.toBeInstanceOf(UserFacingError);
+    expect(tts.selectVoice).not.toHaveBeenCalled();
+  });
+
+  it("explains that an engine with one voice cannot change", async () => {
+    const { manager, tts } = setup();
+    tts.voices.mockResolvedValue([]);
+    await manager.join(join);
+
+    await expect(manager.changeVoice(GUILD, "2")).rejects.toThrow("VOICEVOX");
+  });
+
+  it("requires a session", async () => {
+    const { manager } = setup();
+
+    await expect(manager.changeVoice(GUILD, "2")).rejects.toBeInstanceOf(UserFacingError);
+    await expect(manager.voices(GUILD)).resolves.toEqual([]);
+  });
+
+  it("does not offer or change voices while starting", async () => {
+    const { manager, pods } = setup();
+    pods.start.mockReturnValue(new Promise(() => {}));
+    void manager.join(join);
+    await flush();
+
+    await expect(manager.voices(GUILD)).resolves.toEqual([]);
+    await expect(manager.changeVoice(GUILD, "2")).rejects.toBeInstanceOf(UserFacingError);
+  });
+
+  it("restores the chosen voice after the Pod is recreated", async () => {
+    const { manager, tts, pods } = setup();
+    await manager.join(join);
+    await manager.changeVoice(GUILD, "2");
+    tts.selectVoice.mockClear();
+    for (let i = 0; i < FAILURES_BEFORE_RECOVERY; i += 1) {
+      tts.synthesize.mockRejectedValueOnce(new Error("boom"));
+      manager.handleMessage(GUILD, CHANNEL, "", `失敗${i}`);
+    }
+    await flush();
+    await flush();
+
+    expect(pods.start).toHaveBeenCalledTimes(2);
+    expect(tts.selectVoice).toHaveBeenCalledWith(2, expect.anything());
+  });
+});
+
 describe("reading messages", () => {
+  it("reads the author's name before the message", async () => {
+    const { manager, tts } = setup();
+    await manager.join(join);
+
+    manager.handleMessage(GUILD, CHANNEL, "ぽんた", "こんにちは");
+    await flush();
+
+    expect(tts.synthesize).toHaveBeenCalledWith("ぽんた、こんにちは", expect.anything());
+  });
+
   it("reads the session's channel in order and ignores the rest", async () => {
     const { manager, voice } = setup();
     await manager.join(join);
 
-    manager.handleMessage(GUILD, CHANNEL, "一");
-    manager.handleMessage(GUILD, "other", "別チャンネル");
-    manager.handleMessage("other", CHANNEL, "別サーバー");
-    manager.handleMessage(GUILD, CHANNEL, "<:emoji:1>");
-    manager.handleMessage(GUILD, CHANNEL, "二");
+    manager.handleMessage(GUILD, CHANNEL, "", "一");
+    manager.handleMessage(GUILD, "other", "", "別チャンネル");
+    manager.handleMessage("other", CHANNEL, "", "別サーバー");
+    manager.handleMessage(GUILD, CHANNEL, "", "<:emoji:1>");
+    manager.handleMessage(GUILD, CHANNEL, "", "二");
     await flush();
 
     expect(voice.play.mock.calls.map(([wav]) => wav.toString())).toEqual(["一", "二"]);
@@ -254,7 +332,7 @@ describe("reading messages", () => {
     pods.start.mockReturnValueOnce(pending.promise);
     const joined = manager.join(join);
 
-    manager.handleMessage(GUILD, CHANNEL, "早すぎる");
+    manager.handleMessage(GUILD, CHANNEL, "", "早すぎる");
     pending.resolve({ name: "pod", baseUrl: "http://pod" });
     await joined;
     await flush();
@@ -270,7 +348,7 @@ describe("reading messages", () => {
 
     const total = MAX_QUEUE + 3;
     for (let i = 0; i < total; i += 1) {
-      manager.handleMessage(GUILD, CHANNEL, `m${i}`);
+      manager.handleMessage(GUILD, CHANNEL, "", `m${i}`);
     }
     gate.resolve(Buffer.from("m0"));
     await flush();
@@ -288,8 +366,8 @@ describe("reading messages", () => {
     tts.synthesize.mockRejectedValueOnce(new Error("boom"));
     await manager.join(join);
 
-    manager.handleMessage(GUILD, CHANNEL, "失敗");
-    manager.handleMessage(GUILD, CHANNEL, "成功");
+    manager.handleMessage(GUILD, CHANNEL, "", "失敗");
+    manager.handleMessage(GUILD, CHANNEL, "", "成功");
     await flush();
 
     expect(voice.play.mock.calls.map(([wav]) => wav.toString())).toEqual(["成功"]);
@@ -304,9 +382,9 @@ describe("reading messages", () => {
     await manager.join(join);
 
     for (let i = 0; i < FAILURES_BEFORE_RECOVERY; i += 1) {
-      manager.handleMessage(GUILD, CHANNEL, `失敗${i}`);
+      manager.handleMessage(GUILD, CHANNEL, "", `失敗${i}`);
     }
-    manager.handleMessage(GUILD, CHANNEL, "復旧後");
+    manager.handleMessage(GUILD, CHANNEL, "", "復旧後");
     await flush();
     await flush();
 
@@ -321,7 +399,7 @@ describe("reading messages", () => {
     await manager.join(join);
 
     for (let i = 0; i < FAILURES_BEFORE_RECOVERY * 2; i += 1) {
-      manager.handleMessage(GUILD, CHANNEL, `失敗${i}`);
+      manager.handleMessage(GUILD, CHANNEL, "", `失敗${i}`);
     }
     await flush();
     await flush();
@@ -340,7 +418,7 @@ describe("reading messages", () => {
     pods.start.mockRejectedValueOnce(new Error("no capacity"));
 
     for (let i = 0; i < FAILURES_BEFORE_RECOVERY; i += 1) {
-      manager.handleMessage(GUILD, CHANNEL, `失敗${i}`);
+      manager.handleMessage(GUILD, CHANNEL, "", `失敗${i}`);
     }
     await flush();
     await flush();
@@ -355,8 +433,8 @@ describe("reading messages", () => {
     tts.synthesize.mockReturnValueOnce(gate.promise);
     await manager.join(join);
 
-    manager.handleMessage(GUILD, CHANNEL, "一");
-    manager.handleMessage(GUILD, CHANNEL, "二");
+    manager.handleMessage(GUILD, CHANNEL, "", "一");
+    manager.handleMessage(GUILD, CHANNEL, "", "二");
     await manager.leave(GUILD);
     gate.reject(new DOMException("aborted", "AbortError"));
     await flush();

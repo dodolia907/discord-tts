@@ -6,6 +6,12 @@ export function openJTalkClient(baseUrl: string): TtsClient {
     async credit() {
       return null;
     },
+    async voices() {
+      return [];
+    },
+    async selectVoice() {
+      throw new Error("Open JTalk has only one voice");
+    },
     async synthesize(text, signal) {
       const res = await fetch(`${baseUrl}/synthesize`, {
         method: "POST",

@@ -1,29 +1,54 @@
-import { ensureOk, type TtsClient, withTimeout } from "./client.js";
+import { ensureOk, type TtsClient, type Voice, withTimeout } from "./client.js";
 
 interface Speaker {
   name: string;
-  styles: { id: number }[];
+  styles: { id: number; name: string; type?: string }[];
 }
 
-export function voicevoxClient(baseUrl: string, speaker: number): TtsClient {
+/** These styles need a score rather than text, so they cannot read chat. */
+const NON_SPEECH_TYPES = new Set(["sing", "frame_decode"]);
+
+export function voicevoxClient(baseUrl: string, initialSpeaker: number): TtsClient {
+  let speaker = initialSpeaker;
+
+  const fetchSpeakers = async (signal: AbortSignal): Promise<Speaker[]> => {
+    const res = await fetch(`${baseUrl}/speakers`, { signal: withTimeout(signal) });
+    await ensureOk(res, "VOICEVOX speaker lookup");
+    return (await res.json()) as Speaker[];
+  };
+
+  const initialize = async (id: number, signal: AbortSignal): Promise<void> => {
+    const res = await fetch(`${baseUrl}/initialize_speaker?speaker=${id}&skip_reinit=true`, {
+      method: "POST",
+      signal: withTimeout(signal),
+    });
+    await ensureOk(res, "VOICEVOX speaker initialization");
+  };
+
   return {
-    async prepare(signal) {
-      const res = await fetch(`${baseUrl}/initialize_speaker?speaker=${speaker}&skip_reinit=true`, {
-        method: "POST",
-        signal: withTimeout(signal),
-      });
-      await ensureOk(res, "VOICEVOX speaker initialization");
-    },
+    prepare: (signal) => initialize(speaker, signal),
 
     async credit(signal) {
-      const res = await fetch(`${baseUrl}/speakers`, { signal: withTimeout(signal) });
-      await ensureOk(res, "VOICEVOX speaker lookup");
-      const speakers = (await res.json()) as Speaker[];
+      const speakers = await fetchSpeakers(signal);
       const found = speakers.find((s) => s.styles.some((style) => style.id === speaker));
       if (!found) {
         throw new Error(`VOICEVOX has no style with id ${speaker}`);
       }
       return `VOICEVOX:${found.name}`;
+    },
+
+    async voices(signal): Promise<Voice[]> {
+      const speakers = await fetchSpeakers(signal);
+      return speakers.flatMap((s) =>
+        s.styles
+          .filter((style) => !NON_SPEECH_TYPES.has(style.type ?? ""))
+          .map((style) => ({ id: style.id, label: `${s.name}(${style.name})` })),
+      );
+    },
+
+    async selectVoice(id, signal) {
+      await initialize(id, signal);
+      speaker = id;
     },
 
     async synthesize(text, signal) {

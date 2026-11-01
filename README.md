@@ -16,6 +16,9 @@ Discord ⇄ bot Deployment(常駐)
 |---|---|
 | `/join [engine]` | 実行者が参加中のVCに入り、そのVCのチャットを読み上げる。`engine` は `Open JTalk` か `VOICEVOX` |
 | `/leave` | 読み上げを終了してVCから退出する |
+| `/voice <speaker>` | 読み上げの声を変更する(VOICEVOXのみ)。サーバー全体に効き、`/leave` すると既定の声に戻る |
+
+メッセージは「サーバーニックネーム、本文」の順に読み上げます。
 
 読み上げは次の場合にも終了し、Podを削除します。
 
@@ -27,7 +30,7 @@ Discord ⇄ bot Deployment(常駐)
 | エンジン | イメージ | requests / limits | 備考 |
 |---|---|---|---|
 | Open JTalk | `openjtalk-server/` でビルド | 50m, 64Mi / 500m, 128Mi | 既定のエンジン |
-| VOICEVOX | `docker.io/voicevox/voicevox_engine:cpu-*` | 500m, 512Mi / 2, 1Gi | 利用時は `/join` の応答に音声ライブラリのクレジットを表示する |
+| VOICEVOX | `docker.io/voicevox/voicevox_engine:cpu-*` | 500m, 512Mi / 2, 3Gi | 利用時は `/join` の応答に音声ライブラリのクレジットを表示する |
 
 ## 設定
 
@@ -41,6 +44,7 @@ bot本体の環境変数です。
 | `DEFAULT_ENGINE` | | `openjtalk` | `engine` 省略時のエンジン |
 | `MAX_SESSIONS` | | `2` | 同時セッション数の上限 |
 | `VOICEVOX_SPEAKER` | | `3` | VOICEVOXのスタイルID(3はずんだもんノーマル) |
+| `ACTIVITY_NAME` | | なし | botの「プレイ中」に表示する文字列。未設定なら何も表示しない |
 
 ## Discord側の設定
 

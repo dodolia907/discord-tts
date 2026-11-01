@@ -1,6 +1,6 @@
 import type { Engine, EngineName } from "./engines.js";
-import { toSpeech } from "./text.js";
-import type { TtsClient } from "./tts/client.js";
+import { toUtterance } from "./text.js";
+import { matchVoices, type TtsClient, type Voice } from "./tts/client.js";
 
 export const MAX_QUEUE = 20;
 export const FAILURES_BEFORE_RECOVERY = 3;
@@ -43,6 +43,7 @@ class Session {
   private pod: RunningPod | null = null;
   private tts: TtsClient | null = null;
   private voice: VoiceLink | null = null;
+  private selectedVoice: number | null = null;
   private processing = false;
   private closing: Promise<void> | null = null;
 
@@ -82,11 +83,35 @@ class Session {
     }
   }
 
-  enqueue(content: string): void {
+  /** Returns nothing until the session can answer, because autocomplete must not fail loudly. */
+  async voices(): Promise<Voice[]> {
+    return this.connected && this.tts ? this.tts.voices(this.abort.signal) : [];
+  }
+
+  async changeVoice(query: string): Promise<{ label: string; credit: string | null }> {
+    const tts = this.tts;
+    if (!this.connected || !tts) {
+      throw new UserFacingError("読み上げの準備中です。しばらくしてからお試しください。");
+    }
+    const { signal } = this.abort;
+    const voices = await tts.voices(signal);
+    if (voices.length === 0) {
+      throw new UserFacingError("このエンジンでは声を変更できません。`/join engine:VOICEVOX` をお使いください。");
+    }
+    const voice = matchVoices(voices, query)[0];
+    if (!voice) {
+      throw new UserFacingError(`「${query}」に一致する声が見つかりません。`);
+    }
+    await tts.selectVoice(voice.id, signal);
+    this.selectedVoice = voice.id;
+    return { label: voice.label, credit: await tts.credit(signal) };
+  }
+
+  enqueue(author: string, content: string): void {
     if (!this.connected) {
       return;
     }
-    const text = toSpeech(content);
+    const text = toUtterance(author, content);
     if (!text) {
       return;
     }
@@ -196,6 +221,9 @@ class Session {
       const engine = this.deps.engines[this.request.engine];
       await this.startPod(engine);
       await this.tts!.prepare(this.abort.signal);
+      if (this.selectedVoice !== null) {
+        await this.tts!.selectVoice(this.selectedVoice, this.abort.signal);
+      }
       return true;
     } catch (error) {
       if (!this.abort.signal.aborted) {
@@ -234,11 +262,23 @@ export class SessionManager {
     return true;
   }
 
-  handleMessage(guildId: string, channelId: string, content: string): void {
+  handleMessage(guildId: string, channelId: string, author: string, content: string): void {
     const session = this.sessions.get(guildId);
     if (session?.channelId === channelId) {
-      session.enqueue(content);
+      session.enqueue(author, content);
     }
+  }
+
+  async voices(guildId: string): Promise<Voice[]> {
+    return (await this.sessions.get(guildId)?.voices()) ?? [];
+  }
+
+  async changeVoice(guildId: string, query: string): Promise<{ label: string; credit: string | null }> {
+    const session = this.sessions.get(guildId);
+    if (!session) {
+      throw new UserFacingError("読み上げ中ではありません。先に `/join` を実行してください。");
+    }
+    return session.changeVoice(query);
   }
 
   /** The bot was disconnected or moved by someone else. */

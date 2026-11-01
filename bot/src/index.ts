@@ -1,6 +1,6 @@
 import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
-import { ChannelType, Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
-import { commandDefinitions, handleCommand, syncCommands } from "./commands.js";
+import { ActivityType, ChannelType, Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
+import { commandDefinitions, handleAutocomplete, handleCommand, syncCommands } from "./commands.js";
 import { loadConfig } from "./config.js";
 import { createEngines } from "./engines.js";
 import { KubernetesPods } from "./k8s.js";
@@ -31,6 +31,9 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  ...(config.activityName && {
+    presence: { activities: [{ name: config.activityName, type: ActivityType.Playing }] },
+  }),
 });
 
 const manager = new SessionManager({
@@ -79,6 +82,10 @@ client.once(Events.ClientReady, async (c) => {
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
+  if (interaction.isAutocomplete()) {
+    handleAutocomplete(interaction, manager).catch((error: unknown) => log("autocomplete failed", error));
+    return;
+  }
   if (!interaction.isChatInputCommand()) {
     return;
   }
@@ -92,7 +99,8 @@ client.on(Events.MessageCreate, (message) => {
     return;
   }
   if (message.channel.type === ChannelType.GuildVoice || message.channel.type === ChannelType.GuildStageVoice) {
-    manager.handleMessage(message.guildId, message.channelId, message.cleanContent);
+    const author = message.member?.displayName ?? message.author.displayName;
+    manager.handleMessage(message.guildId, message.channelId, author, message.cleanContent);
   }
 });
 

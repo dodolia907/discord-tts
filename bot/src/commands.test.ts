@@ -40,6 +40,6 @@ describe("syncCommands", () => {
   });
 
   it("defines the commands the bot handles", () => {
-    expect(definitions.map((d) => d.name)).toEqual(["join", "leave"]);
+    expect(definitions.map((d) => d.name)).toEqual(["join", "leave", "voice"]);
   });
 });

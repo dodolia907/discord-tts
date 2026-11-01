@@ -52,10 +52,11 @@ export function createEngines(opts: {
       command: ["/opt/voicevox_engine/run", "--host", "0.0.0.0"],
       port: 50021,
       readinessPath: "/version",
-      // Measured at 335 MB after loading one speaker and synthesizing.
+      // /voice keeps each chosen voice's model loaded, at about 60 MB per character. 1Gi ran out at
+      // 16 of the 43 characters; 3Gi covers all of them by extrapolation.
       resources: {
         requests: { cpu: "500m", memory: "512Mi" },
-        limits: { cpu: "2", memory: "1Gi" },
+        limits: { cpu: "2", memory: "3Gi" },
       },
       startTimeoutMs: 60_000 * 10,
       createClient: (baseUrl) => voicevoxClient(baseUrl, opts.voicevoxSpeaker),

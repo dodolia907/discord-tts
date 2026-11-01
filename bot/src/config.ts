@@ -8,6 +8,8 @@ export interface Config {
   openjtalkImage: string;
   voicevoxImage: string;
   voicevoxSpeaker: number;
+  /** Shown as "Playing ..." on the bot's profile. Null shows nothing. */
+  activityName: string | null;
   /** The bot's own Pod. TTS Pods point their ownerReference at it. */
   owner: { name: string; uid: string };
 }
@@ -47,6 +49,7 @@ export function loadConfig(env: Env = process.env): Config {
     openjtalkImage: required(env, "OPENJTALK_IMAGE"),
     voicevoxImage: required(env, "VOICEVOX_IMAGE"),
     voicevoxSpeaker: integer(env, "VOICEVOX_SPEAKER", 3, 0),
+    activityName: env.ACTIVITY_NAME?.trim() || null,
     owner: { name: required(env, "POD_NAME"), uid: required(env, "POD_UID") },
   };
 }
