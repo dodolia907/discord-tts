@@ -1,67 +1,112 @@
 # discord-tts
 
-VCのチャットを読み上げてVCに流すDiscord bot。常駐するのはbot本体だけで、音声合成Podは `/join` のときに起動し、VCから切断すると削除します。
+A Discord bot that reads voice channel chat aloud in the voice channel. Only the bot runs all the time. It starts a text-to-speech (TTS) Pod on `/join` and deletes the Pod when the session ends, so idle sessions use no CPU or memory for speech synthesis.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    Discord["Discord"] <-->|"Gateway and voice"| Bot["Bot Deployment<br/>(always running)"]
+    Bot -->|"Create and delete Pods"| API["Kubernetes API"]
+    API -.-> TTS["TTS Pod<br/>(one per session)"]
+    Bot -->|"Text over HTTP"| TTS
+    TTS -->|"WAV"| Bot
+    Bot <--> Data[("Dictionary volume")]
 ```
-Discord ⇄ bot Deployment(常駐)
-            │  /join → Pod作成 → Ready待ち → VC接続
-            │  チャット受信 → HTTPで合成 → VCへ再生
-            ▼
-          tts-<engine>-xxxxx Pod(セッションごとに1つ)
+
+The bot holds the voice connection, so TTS Pods never receive the bot token. A NetworkPolicy lets only the bot call a TTS Pod, and a TTS Pod cannot open any connections.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Bot
+    participant K8s as Kubernetes API
+    participant TTS as TTS Pod
+
+    User->>Bot: /join
+    Bot->>K8s: Create Pod
+    K8s-->>Bot: Pod is Ready
+    Bot->>User: Join the voice channel
+    loop For each chat message
+        User->>Bot: Message
+        Bot->>TTS: Synthesize text
+        TTS-->>Bot: WAV
+        Bot->>User: Play audio
+    end
+    User->>Bot: /leave, or everyone leaves
+    Bot->>K8s: Delete Pod
 ```
 
-## コマンド
+## Commands
 
-| コマンド | 動作 |
+| Command | Description |
 |---|---|
-| `/join [engine]` | 実行者が参加中のVCに入り、そのVCのチャットを読み上げる。`engine` は `Open JTalk` か `VOICEVOX` |
-| `/leave` | 読み上げを終了してVCから退出する |
-| `/voice <speaker>` | 読み上げの声を変更する(VOICEVOXのみ)。サーバー全体に効き、`/leave` すると既定の声に戻る |
-| `/dict add <word> <reading>` | 単語の読みを登録する。同じ単語なら上書きする |
-| `/dict del <word>` | 単語を辞書から消去する |
-| `/dict show` | 辞書の一覧を表示する |
+| `/join [engine]` | Joins your voice channel and reads its chat. `engine` is `Open JTalk` or `VOICEVOX`. |
+| `/leave` | Stops reading and leaves the voice channel. |
+| `/voice <speaker>` | Changes the voice for the whole server (VOICEVOX only). It returns to the default after `/leave`. |
+| `/dict add <word> <reading>` | Registers a word's reading, replacing any existing one. |
+| `/dict del <word>` | Removes a word from the dictionary. |
+| `/dict show` | Lists the dictionary. |
 
-メッセージは「サーバーニックネーム、本文」の順に読み上げます。
+A session also ends, and its Pod is deleted, when the bot is disconnected or moved to another voice channel, or when everyone leaves the voice channel.
 
-辞書はサーバーごとに分かれ、メンバー全員が編集できます。本文とニックネームに適用し、大文字と小文字は区別しません。上限は200件、単語は50文字、読みは100文字までです。
+### Reading
 
-読み上げは次の場合にも終了し、Podを削除します。
+- A message is read as `<server nickname>、<message>`.
+- URLs, code blocks, and spoilers are read as placeholders, and custom emoji are removed.
+- A message is cut off after 150 characters and ends with `以下略`.
 
-- botがVCから切断された、または別のVCへ移動させられた
-- VCから人が全員退出した
+### Dictionary
 
-## 音声合成エンジン
+- Each server has its own dictionary, and any member can edit it.
+- It applies to both messages and nicknames, and it ignores case.
+- Longer words take priority, and a reading is never replaced again.
+- The limits are 200 entries, 50 characters per word, and 100 characters per reading.
 
-| エンジン | イメージ | requests / limits | 備考 |
+### Restart notices
+
+The bot posts in the voice channel chat when:
+
+- It recreates a TTS Pod after repeated synthesis failures.
+- A TTS container restarts, for example after running out of memory. This check runs every 15 seconds.
+- The bot itself shuts down or comes back after a crash.
+
+## Speech engines
+
+| Engine | Image | CPU and memory requests | CPU and memory limits | Notes |
+|---|---|---|---|---|
+| Open JTalk | Built from `openjtalk-server/` | 50m, 64Mi | 500m, 128Mi | Default. It has one voice. |
+| VOICEVOX | `docker.io/voicevox/voicevox_engine:cpu-*` | 500m, 512Mi | 2, 3Gi | The reply to `/join` and `/voice` shows the required voice credit. |
+
+VOICEVOX keeps each selected voice's model in memory until the session ends, at about 60 MB per character.
+
+## Configuration
+
+These are the bot's environment variables.
+
+| Variable | Required | Default | Description |
 |---|---|---|---|
-| Open JTalk | `openjtalk-server/` でビルド | 50m, 64Mi / 500m, 128Mi | 既定のエンジン |
-| VOICEVOX | `docker.io/voicevox/voicevox_engine:cpu-*` | 500m, 512Mi / 2, 3Gi | 利用時は `/join` の応答に音声ライブラリのクレジットを表示する |
+| `DISCORD_TOKEN` | Yes | | Bot token. |
+| `POD_NAMESPACE`, `POD_NAME`, `POD_UID` | Yes | | Set through the Downward API. They give TTS Pods their namespace and owner reference. |
+| `OPENJTALK_IMAGE`, `VOICEVOX_IMAGE` | Yes | | TTS Pod images. |
+| `DEFAULT_ENGINE` | | `openjtalk` | Engine used when `/join` has no `engine`. |
+| `MAX_SESSIONS` | | `2` | Maximum number of concurrent sessions. |
+| `VOICEVOX_SPEAKER` | | `3` | Default VOICEVOX style ID. `3` is Zundamon (Normal). |
+| `ACTIVITY_NAME` | | None | Text for the bot's "Playing" status. If unset, no status is shown. |
+| `DATA_DIR` | | `/data` | Dictionary location. Mount a persistent volume here. |
 
-## 設定
+## Discord setup
 
-bot本体の環境変数です。
+1. Create a bot in the Developer Portal and enable **Message Content Intent**.
+2. Invite it with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Connect, and Speak.
 
-| 変数 | 必須 | 既定値 | 説明 |
-|---|---|---|---|
-| `DISCORD_TOKEN` | はい | | botトークン |
-| `POD_NAMESPACE` / `POD_NAME` / `POD_UID` | はい | | Downward APIで渡す。TTS Podの作成先とownerReferenceに使う |
-| `OPENJTALK_IMAGE` / `VOICEVOX_IMAGE` | はい | | TTS Podのイメージ |
-| `DEFAULT_ENGINE` | | `openjtalk` | `engine` 省略時のエンジン |
-| `MAX_SESSIONS` | | `2` | 同時セッション数の上限 |
-| `VOICEVOX_SPEAKER` | | `3` | VOICEVOXのスタイルID(3はずんだもんノーマル) |
-| `ACTIVITY_NAME` | | なし | botの「プレイ中」に表示する文字列。未設定なら何も表示しない |
-| `DATA_DIR` | | `/data` | 辞書の保存先。永続ボリュームをマウントする |
-
-## Discord側の設定
-
-1. Developer PortalでBotを作成し、**Message Content Intent** を有効にする。
-2. `bot` と `applications.commands` のスコープで招待する。権限は「チャンネルを見る」「メッセージを送信」「接続」「発言」。
-
-## 開発
+## Development
 
 ```sh
 (cd openjtalk-server && go test ./...)
 (cd bot && npm ci && npm run typecheck && npm test)
 ```
 
-デプロイ用マニフェストは [dodolia907/k8s](https://github.com/dodolia907/k8s) の `manifest/cts/discord-tts/` にあります。
+## Deployment
+
+The manifests are in `manifest/cts/discord-tts/` of [dodolia907/k8s](https://github.com/dodolia907/k8s). Pushing a `v*` tag publishes the images to GHCR.
