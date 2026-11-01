@@ -1,3 +1,4 @@
+import { createReplacer, type DictionaryEntry } from "./dictionary.js";
 import type { Engine, EngineName } from "./engines.js";
 import { toUtterance } from "./text.js";
 import { matchVoices, type TtsClient, type Voice } from "./tts/client.js";
@@ -27,6 +28,7 @@ export interface VoiceLink {
 export interface SessionDeps {
   pods: PodController;
   engines: Record<EngineName, Engine>;
+  dictionary: { list(guildId: string): Promise<DictionaryEntry[]> };
   /** Leaves no connection behind when it rejects. `onLost` fires if the link later dies. */
   connectVoice(guildId: string, channelId: string, onLost: () => void, signal: AbortSignal): Promise<VoiceLink>;
   /** Must not reject. */
@@ -44,7 +46,7 @@ type JoinRequest = { guildId: string; channelId: string; engine: EngineName };
 class Session {
   readonly channelId: string;
   private readonly abort = new AbortController();
-  private readonly queue: string[] = [];
+  private readonly queue: { author: string; content: string }[] = [];
   private pod: RunningPod | null = null;
   private tts: TtsClient | null = null;
   private voice: VoiceLink | null = null;
@@ -119,11 +121,10 @@ class Session {
     if (!this.connected) {
       return;
     }
-    const text = toUtterance(author, content);
-    if (!text) {
+    if (!toUtterance(author, content)) {
       return;
     }
-    this.queue.push(text);
+    this.queue.push({ author, content });
     if (this.queue.length > MAX_QUEUE) {
       this.queue.shift();
     }
@@ -209,7 +210,11 @@ class Session {
     this.processing = true;
     try {
       while (this.queue.length > 0 && !signal.aborted) {
-        const text = this.queue.shift()!;
+        const message = this.queue.shift()!;
+        const text = toUtterance(message.author, message.content, await this.loadReplacer());
+        if (signal.aborted) {
+          return;
+        }
         let wav: Buffer;
         try {
           wav = await this.tts!.synthesize(text, signal);
@@ -241,6 +246,16 @@ class Session {
       }
     } finally {
       this.processing = false;
+    }
+  }
+
+  /** A dictionary problem must not stop the reading, so this falls back to the text as written. */
+  private async loadReplacer(): Promise<(text: string) => string> {
+    try {
+      return createReplacer(await this.deps.dictionary.list(this.request.guildId));
+    } catch (error) {
+      this.deps.log("failed to load the dictionary", error);
+      return (text) => text;
     }
   }
 

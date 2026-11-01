@@ -46,6 +46,7 @@ function setup(overrides: Partial<SessionDeps> = {}) {
   const deps: SessionDeps = {
     pods,
     engines: { openjtalk: engine, voicevox: engine },
+    dictionary: { list: vi.fn(async () => []) },
     connectVoice: vi.fn(async (_g, _c, onLost) => {
       lost = onLost;
       return voice;
@@ -381,6 +382,32 @@ describe("changing the voice", () => {
   });
 });
 
+describe("reading with the dictionary", () => {
+  it("applies the guild's current dictionary", async () => {
+    const list = vi.fn(async (_guildId: string) => [{ word: "GitHub", reading: "ギットハブ" }]);
+    const { manager, tts } = setup({ dictionary: { list } });
+    await manager.join(join);
+
+    manager.handleMessage(GUILD, CHANNEL, "", "GitHubを見る");
+    await flush();
+
+    expect(list).toHaveBeenCalledWith(GUILD);
+    expect(tts.synthesize).toHaveBeenCalledWith("ギットハブを見る", expect.anything());
+  });
+
+  it("reads the text as written when the dictionary cannot be loaded", async () => {
+    const list = vi.fn().mockRejectedValue(new Error("disk error"));
+    const { manager, tts, deps } = setup({ dictionary: { list } });
+    await manager.join(join);
+
+    manager.handleMessage(GUILD, CHANNEL, "", "GitHubを見る");
+    await flush();
+
+    expect(tts.synthesize).toHaveBeenCalledWith("GitHubを見る", expect.anything());
+    expect(deps.log).toHaveBeenCalled();
+  });
+});
+
 describe("reading messages", () => {
   it("reads the author's name before the message", async () => {
     const { manager, tts } = setup();
@@ -515,11 +542,25 @@ describe("reading messages", () => {
 
     manager.handleMessage(GUILD, CHANNEL, "", "一");
     manager.handleMessage(GUILD, CHANNEL, "", "二");
+    await flush();
     await manager.leave(GUILD);
     gate.reject(new DOMException("aborted", "AbortError"));
     await flush();
 
     expect(voice.play).not.toHaveBeenCalled();
     expect(tts.synthesize).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not synthesize a message whose dictionary lookup outlasts the session", async () => {
+    const lookup = deferred<never[]>();
+    const { manager, tts } = setup({ dictionary: { list: () => lookup.promise } });
+    await manager.join(join);
+
+    manager.handleMessage(GUILD, CHANNEL, "", "一");
+    await manager.leave(GUILD);
+    lookup.resolve([]);
+    await flush();
+
+    expect(tts.synthesize).not.toHaveBeenCalled();
   });
 });

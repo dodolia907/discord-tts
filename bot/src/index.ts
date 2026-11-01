@@ -2,6 +2,7 @@ import { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
 import { ActivityType, ChannelType, Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
 import { commandDefinitions, handleAutocomplete, handleCommand, syncCommands } from "./commands.js";
 import { loadConfig } from "./config.js";
+import { FileDictionary } from "./dictionary.js";
 import { createEngines } from "./engines.js";
 import { KubernetesPods } from "./k8s.js";
 import { SessionManager } from "./session.js";
@@ -24,7 +25,11 @@ const kubeConfig = new KubeConfig();
 kubeConfig.loadFromCluster();
 const pods = new KubernetesPods(kubeConfig.makeApiClient(CoreV1Api), config.namespace, config.owner, log);
 
+const dictionary = new FileDictionary(config.dataDir);
+
 const client = new Client({
+  // Replies repeat what users typed, which must not be able to ping anyone.
+  allowedMentions: { parse: [] },
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
@@ -39,6 +44,7 @@ const client = new Client({
 const manager = new SessionManager({
   pods,
   engines,
+  dictionary,
   maxSessions: config.maxSessions,
   log,
   async connectVoice(guildId, channelId, onLost, signal) {
@@ -90,13 +96,13 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.InteractionCreate, (interaction) => {
   if (interaction.isAutocomplete()) {
-    handleAutocomplete(interaction, manager).catch((error: unknown) => log("autocomplete failed", error));
+    handleAutocomplete(interaction, manager, dictionary).catch((error: unknown) => log("autocomplete failed", error));
     return;
   }
   if (!interaction.isChatInputCommand()) {
     return;
   }
-  handleCommand(interaction, { manager, engines, defaultEngine: config.defaultEngine, log }).catch((error: unknown) =>
+  handleCommand(interaction, { manager, engines, dictionary, defaultEngine: config.defaultEngine, log }).catch((error: unknown) =>
     log(`/${interaction.commandName} failed`, error),
   );
 });

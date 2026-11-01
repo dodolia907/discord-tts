@@ -12,6 +12,13 @@ describe("toUtterance", () => {
     expect(toUtterance(author, content)).toBe(expected);
   });
 
+  it("applies the dictionary to the name and the message, then truncates", () => {
+    const replace = (text: string) => text.replaceAll("x", "ああ");
+
+    expect(toUtterance("x", "x見て", replace)).toBe("ああ、ああ見て");
+    expect(toSpeech("x".repeat(MAX_SPOKEN_CHARS), replace)).toBe(`${"あ".repeat(MAX_SPOKEN_CHARS)} 以下略`);
+  });
+
   it("does not count the name towards the message limit", () => {
     const body = "あ".repeat(MAX_SPOKEN_CHARS);
     expect(toUtterance("ぽんた", body)).toBe(`ぽんた、${body}`);

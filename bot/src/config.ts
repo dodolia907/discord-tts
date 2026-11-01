@@ -10,6 +10,8 @@ export interface Config {
   voicevoxSpeaker: number;
   /** Shown as "Playing ..." on the bot's profile. Null shows nothing. */
   activityName: string | null;
+  /** Where the guilds' dictionaries are kept. */
+  dataDir: string;
   /** The bot's own Pod. TTS Pods point their ownerReference at it. */
   owner: { name: string; uid: string };
 }
@@ -50,6 +52,7 @@ export function loadConfig(env: Env = process.env): Config {
     voicevoxImage: required(env, "VOICEVOX_IMAGE"),
     voicevoxSpeaker: integer(env, "VOICEVOX_SPEAKER", 3, 0),
     activityName: env.ACTIVITY_NAME?.trim() || null,
+    dataDir: env.DATA_DIR || "/data",
     owner: { name: required(env, "POD_NAME"), uid: required(env, "POD_UID") },
   };
 }
