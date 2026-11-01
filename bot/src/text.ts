@@ -1,4 +1,4 @@
-export const MAX_SPOKEN_CHARS = 100;
+export const MAX_SPOKEN_CHARS = 150;
 
 /** Converts a message (with mentions already resolved) to speakable text. Empty means "skip". */
 export function toSpeech(content: string): string {
